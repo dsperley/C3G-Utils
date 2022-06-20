@@ -1,0 +1,418 @@
+library(scPower)
+library(reshape2)
+library(tidyverse)
+library(Seurat)
+
+#####First try getting priors
+path <- "~/mnt/abacus-home/Analysis_report/1_enhanced_harmonized_object.rds"
+
+pilot <- readRDS(path)
+
+library(hierarchicell)
+
+## from abacus
+## 
+
+### prep
+res40 <- read.csv("40_raw_counts.csv",row.names = 1)
+res40_t <- as.data.frame(t(res40))
+
+res40_t <- rownames_to_column(res40_t,"Sample_Cell")
+res40_t <- extract(res40_t,Sample_Cell,into=c("Sample","Cell"),regex="([MF][0-9]+)\\.(.*)")
+res40_t <- select(res40_t,Cell,Sample,everything())
+
+meta_40 <- read.csv("40_meta.csv",row.names=1)
+## select only Male, Caucasian
+meta_40_sub_mc <- filter(meta_40,Race == "Caucasian",Sex == "Male")
+
+## or Female, Caucasian
+meta_40_sub_fc <- filter(meta_40,Race == "Caucasian",Sex == "Female")
+samples_to_keep <- meta_40_sub_fc$Sample
+
+res40_mc <- filter(res40_t,Sample %in% samples_to_keep)
+res40_mc_filtered <- filter_counts(res40_mc)
+data_summ_40_mc <- compute_data_summaries(res40_mc_filtered,type = "Raw")
+
+
+res40_fc <- filter(res40_t,Sample %in% samples_to_keep)
+res40_fc_filtered <- filter_counts(res40_fc)
+data_summ_40_fc <- compute_data_summaries(res40_fc_filtered,type = "Raw")
+
+approximate_gene_mean(data_summ_40_fc,plot = T)
+model_dispersion(data_summ_40_fc,plot = T)
+model_inter(data_summ_40_fc,plot=T)
+approximate_gene_drop(data_summ_40_fc,plot=T)
+model_drop_sd(data_summ_40_fc,plot=T)
+
+
+ngenes <- 1400
+n_per_group <- 400
+cells <- 50
+fc <- 2
+
+power_hierarchicell(data_summ,
+                    n_genes = ngenes,
+                    n_per_group =n_per_group,
+                    cells_per_case = cells,
+                    cells_per_control = cells,
+                    foldchange = fc)
+
+
+sim <-simulate_hierarchicell(data_summ_40_mc,
+                             n_genes = ngenes,
+                             n_per_group =n_per_group,
+                             cells_per_case = cells,
+                             cells_per_control = cells,
+                             foldchange = fc)
+
+
+
+
+
+res39 <- read.csv("39_raw_counts.csv",row.names = 1)
+res39_t <- as.data.frame(t(res39))
+
+res39_t <- rownames_to_column(res39_t,"Sample_Cell")
+res39_t <- extract(res39_t,Sample_Cell,into=c("Sample","Cell"),regex="([MF][0-9]+)\\.(.*)")
+res39_t <- select(res39_t,Cell,Sample,everything())
+
+res39_filtered2 <- filter_counts(res39_t,gene_thresh = 5,cell_thresh = 5)
+data_summ39_2 <- compute_data_summaries(res39_filtered2,type = "Raw")
+
+data_summ40 <- compute_data_summaries(res40_filtered,type = "Raw") 
+
+approximate_gene_mean(data_summ39_2,plot = T)
+model_dispersion(data_summ39_2,plot = T)
+model_inter(data_summ39_2,plot=T)
+approximate_gene_drop(data_summ39_2,plot=T)
+model_drop_sd(data_summ39_2,plot=T)
+
+
+approximate_gene_mean(data_summ40,plot = T)
+model_dispersion(data_summ40,plot = T)
+model_inter(data_summ39_2,plot=T)
+approximate_gene_drop(data_summ39_2,plot=T)
+model_drop_sd(data_summ39_2,plot=T)
+
+
+
+
+ngenes <- 1400
+n_per_group <- 400
+cells <- 50
+fc <- 2
+
+power_hierarchicell(data_summ,
+                   n_genes = ngenes,
+                   n_per_group =n_per_group,
+                   cells_per_case = cells,
+                   cells_per_control = cells,
+                   foldchange = fc)
+
+
+sim <-simulate_hierarchicell(data_summ_40_mc,
+                    n_genes = ngenes,
+                    n_per_group =n_per_group,
+                    cells_per_case = cells,
+                    cells_per_control = cells,
+                    foldchange = fc)
+
+
+powers <- map_dbl(fc,function(fc) {
+res <- capture.output(power_hierarchicell(data_summ,
+                    n_genes = ngenes,
+                    n_per_group =n_per_group,
+                    cells_per_case = cells,
+                    cells_per_control = cells,
+                    foldchange = fc),type="message")
+line <- grep("Hurdle",res,value = T)
+power <- as.numeric(gsub("Hurdle.*is: ","",line))
+return(power)
+})
+
+sim <- simulate_hierarchicell(data_summ,n_genes=1000,n_per_group=100,cells_per_control=100,cells_per_case=100,foldchange=1.2)
+
+
+by_cell <- split(res40_filtered,res40_filtered$Cell)
+n_genes <- map_dbl(by_cell,function(x) {
+  data <- x[,-c(1,2)]
+  rowSums(data>0)
+})
+
+
+### average n_genes
+mean(n_genes)
+#1394.192
+## round up 1400
+
+
+####params for low abundant cluster
+#### cells per sample: frequency is: 0.0004853433
+#### 5000 * 0.0004853433 = 2.43 so ~2
+
+ngenes <- 1400
+n_per_group <- 400
+cells <- 2
+fc <- c(1.2,1.5,1.7,2)
+
+powers <- map_dbl(fc,function(fc) {
+  res <- capture.output(power_hierarchicell(data_summ,
+                                            n_genes = ngenes,
+                                            n_per_group =n_per_group,
+                                            cells_per_case = cells,
+                                            cells_per_control = cells,
+                                            foldchange = fc),type="message")
+  line <- grep("Hurdle",res,value = T)
+  power <- as.numeric(gsub("Hurdle.*is: ","",line))
+  return(power)
+})
+
+
+
+
+#####################
+res1 <- read.csv("1_raw_counts.csv",row.names = 1)
+res1_t <- as.data.frame(t(res1))
+
+res1_t <- rownames_to_column(res1_t,"Sample_Cell")
+res1_t <- extract(res1_t,Sample_Cell,into=c("Sample","Cell"),regex="([MF][0-9]+)\\.(.*)")
+res1_t <- select(res1_t,Cell,Sample,everything())
+
+res1_filtered <- filter_counts(res1_t)
+data_summ <- compute_data_summaries(res1_filtered,type = "Raw")
+
+
+
+approximate_gene_mean(data_summ,plot = T)
+model_dispersion(data_summ,plot = T)
+model_inter(data_summ,plot=T)
+approximate_gene_drop(data_summ,plot=T)
+model_drop_sd(data_summ,plot=T)
+
+####
+Error in `contrasts<-`(`*tmp*`, value = contr.funs[1 + isOF[nn]]) : 
+  contrasts can be applied only to factors with 2 or more levels
+In addition: There were 50 or more warnings (use warnings() to see the first 50)
+#################################
+
+
+### Scpower
+#####################################################################
+##### scPower
+#Main experimental parameters
+nSamples<-20
+nCells<-1000
+readDepth<-10000
+
+##################
+##Estimating paraments
+umi
+gamma
+disp
+expressed.genes.df<-NULL
+
+
+ 
+  
+  #Create an annotation file (here containing only one cell type, but can be more)
+  annot.df<-data.frame(individual=str_split(colnames(res39),"\\.",simplify = T)[,1],
+                       cell.type=rep("default_ct",ncol(res39)))
+  #Reformat count matrix into pseudobulk matrix
+  pseudo.bulk<-create.pseudobulk(res39,annot.df)
+  #Calculate expressed genes in the pseudobulk matrix
+  expressed.genes<-calculate.gene.counts(pseudo.bulk,min.counts=3, perc.indiv=0.5)
+  #Get the number of expressed genes
+  num.expressed.genes<-nrow(expressed.genes)
+  
+  #Save expressed genes
+  expressed.genes.df<-rbind(expressed.genes.df,
+                            data.frame(num.cells=ncol(res39),
+                                       expressed.genes=num.expressed.genes))
+
+
+print(expressed.genes.df)
+
+
+
+norm.mean.values<-NULL
+disp.param<-NULL
+
+  temp<-nbinom.estimation(res39)
+  
+  #Save the normalized mean values
+  norm.mean.values.temp<-temp[[1]]
+  norm.mean.values<-rbind(norm.mean.values,norm.mean.values.temp)
+  
+  #Save the parameter of the mean-dispersion function
+  disp.param.temp<-temp[[3]]
+  disp.param<-rbind(disp.param,disp.param.temp)
+}
+
+#First rows of the data frame with normalized mean values
+head(norm.mean.values)
+
+#Parameter of the mean - dispersion function
+print(disp.param)
+
+
+#### gamma fits
+gamma.fits<-NULL
+
+  
+  #Number of cells per cell type as censoring point
+  censoredPoint<- 1 / ncol(res39)
+  
+  norm.mean.values.temp<-norm.mean.values
+  gamma.fit.temp<-mixed.gamma.estimation(norm.mean.values.temp$mean,
+                                         num.genes.kept = 21000,
+                                         censoredPoint = censoredPoint)
+  
+  gamma.fits<-rbind(gamma.fits,gamma.fit.temp)
+
+print(gamma.fits)
+
+visualize.gamma.fits(norm.mean.values$mean,
+                     gamma.fits,
+                     nGenes=21000)
+
+
+umi.values<-NULL
+
+  mean.umi<-meanUMI.calculation(res39)
+  umi.values<-rbind(umi.values,data.frame(mean.umi))
+
+
+print(umi.values)
+
+gamma.fits<-cbind(gamma.fits,umi.values)
+
+#Convert the gamma fits from the shape-rate parametrization to the mean-sd parametrization
+gamma.fits<-convert.gamma.parameters(gamma.fits)
+
+#Visualize the linear relationship between gamma parameters and UMI values in plots
+plot.values<-melt(gamma.fits,id.vars=c("matrix","mean.umi"))
+plot.values<-plot.values[plot.values$variable %in% c("mean1","mean2","sd1","sd2","p1","p2"),]
+ggplot(plot.values,aes(x=mean.umi,y=value))+
+  geom_point()+geom_line()+
+  facet_wrap(~variable,ncol=2,scales="free")
+
+#Fit relationship between gamma parameters and UMI values
+gamma.linear.fit.new<-umi.gamma.relation(gamma.fits)
+print(gamma.linear.fit.new)
+
+ct<-"CD4 T cells"
+
+#Standard significance threshold
+sign_threshold<-0.05
+
+#Simulate effect sizes
+set.seed(1)
+num_de_genes<-200
+ranks<-uniform.ranks.interval(start=1,end=20000,numGenes=num_de_genes)
+de_group1<-effectSize.DE.simulation(mean=1,sd=0.5,numGenes=num_de_genes)
+de_group2<-effectSize.DE.simulation(mean=2,sd=0.5,numGenes=num_de_genes)
+
+de_priors<-data.frame(ranks=ranks,
+                      foldChange_group1=de_group1,
+                      foldChange_group2=de_group2)
+
+#Get single cell negative binomial parameter
+nb_values<-scPower:::estimate.mean.dsp.values(readDepth,
+                                              read.umi.fit[read.umi.fit$type=="10X_PBMC_1",],
+                                              gamma.mixed.fits,ct,disp.fun.param)
+
+#Scale it with the number of cells to get the pseudobulk NB parameters
+nb_values$mean_pseudobulk<-nb_values$means*nCells
+nb_values$dsp_pseudobulk<-nb_values$dsp/nCells
+
+#Extract the DE genes
+nb_values<-nb_values[order(nb_values$means,decreasing=TRUE),]
+
+#Simulate a count matrix for the DE genes
+de_base_values<-nb_values[de_priors$ranks,]
+
+#Shift mean by fold change for the second and third group
+de_base_values$means_pseudobulk_g1<-de_base_values$mean_pseudobulk * 
+  de_priors$foldChange_group1
+de_base_values$means_pseudobulk_g2<-de_base_values$mean_pseudobulk * 
+  de_priors$foldChange_group2
+
+#Simulate a count matrix for DE genes
+n_sim<-300
+groups<-as.factor(rep(c(1,2,3),each=n_sim/3))
+llikehoods<-NULL
+for(i in 1:nrow(de_base_values)){
+  mean_vector<-c(rep(de_base_values$mean_pseudobulk[i],n_sim/3),
+                 rep(de_base_values$means_pseudobulk_g1[i],n_sim/3),
+                 rep(de_base_values$means_pseudobulk_g2[i],n_sim/3))
+  counts<-rnbinom(length(mean_vector),mu=mean_vector,
+                  size=1/de_base_values$dsp_pseudobulk[i])
+  
+  #Estimate log likelihood of the full model
+  full_model<-glm(counts ~ groups,family="gaussian")
+  logLik_full<-logLik(full_model)
+  
+  #Estimate log likelihood of the reduced model
+  reduced_model<-glm(counts ~ 1, family="gaussian")
+  logLik_reduced<-logLik(reduced_model)
+  
+  llikehoods<-rbind(llikehoods,
+                    data.frame(logLik_full,logLik_reduced))
+  
+}
+
+#Estimate non-centrality parameter
+llikehoods$non_cent_param<--2*(llikehoods$logLik_reduced - llikehoods$logLik_full)
+
+
+
+###################
+head(res39)
+res39_long <- rownames_to_column(res39,"Gene") %>% 
+             pivot_longer(-Gene,names_to = "Cell",values_to = "Counts")
+res39_long <- mutate(res39_long,Ind = str_split(Cell,"\\.",simplify = T)[,1])
+res39_pseudo <- group_by(res39_long,Gene,Ind) %>% summarise(Counts=sum(Counts))
+DE_39_pseudo <- pivot_wider(res39_pseudo,names_from = Ind,values_from = Counts)
+DEseq39_counts <- as.matrix(DE_39_pseudo[,-1])
+rownames(DEseq39_counts) <- DE_39_pseudo$Gene
+meta39 <- read.csv("39_meta.csv")
+meta39_sub <- dplyr::select(meta39,Sample,Condition,Sex,Race)
+meta39_sub <- distinct(meta39_sub)
+colData <- meta39_sub[,-1]
+rownames(colData) <- meta39_sub$Sample
+dds <- DESeq2::DESeqDataSetFromMatrix(countData = DEseq39_counts,colData = colData,design = ~Sex + Race + Condition)
+dds <- DESeq2::DESeq(dds)
+res <- DESeq2::results(dds)
+summary(res)
+
+
+
+
+#######################
+## results from Narval
+power_res <- read.csv("nGenes_2200_nCells_120_power_results.csv")
+power_res <- mutate(power_res,effect = as.factor(effect))
+ggplot(power_res,aes(N,power,group=effect)) +
+  geom_line(aes(color=effect)) +
+  geom_hline(yintercept = 0.8,linetype="dashed") +
+  facet_grid(~cluster) +
+  theme_classic()
+
+ggplot(filter(power_res,cluster==40,N>5),aes(N,power,group=effect)) +
+  geom_line(aes(color=effect)) +
+  geom_point(aes(color=effect)) +
+  geom_hline(yintercept = 0.8,linetype="dashed") +
+  labs(x="Number of Samples",y="Power",col="Fold Change") +
+  scale_y_continuous(labels = scales::percent_format(accuracy = 1),limits = c(0,1)) +
+  #ylab("Power") +
+  theme_bw() +
+  theme(panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(),
+        panel.background = element_rect(colour = "black", size=1))
+ggsave(filename = "Power_curve_revised.png",width=6, height=4, dpi=300)
+
+export <- filter(power_res,cluster==40,N>5) %>% 
+  select(-cluster) %>%
+  mutate(power=round(power,2))
+
+write.csv(export,file="power.csv",row.names=F)

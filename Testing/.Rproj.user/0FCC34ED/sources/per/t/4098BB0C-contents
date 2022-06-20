@@ -1,0 +1,91 @@
+---
+title: "Tips and Tricks"
+output: html_document
+---
+
+## Scripting
+Arguments from command line:
+```{r,eval=FALSE}
+ 
+library(optparse)
+  option_list = list(
+   make_option(c("-f", "--counts"), type="character", default=NULL,
+                 help="cluster counts", metavar="character"),
+ make_option(c("-d", "--data_sum"), type="character", default=NULL,
+                 help="data summary", metavar="character"),
+   make_option(c("-o", "--out"), type="character", default="power_analysis_out",
+                 help="output directory [default= %default]", metavar="character"),
+make_option(c("-g", "--n_genes"), type="integer", default="1500",
+                 help="number of genes for simulation", metavar="int"),
+make_option(c("-n", "--n_samples"), type="integer", default="10",
+                 help="number of samples per group", metavar="int"),
+make_option(c("--n_control"), type="integer", default="10",
+                 help="number of samples per control", metavar="int"),
+make_option(c("--n_case"), type="integer", default="10",
+                 help="number of samples per case", metavar="int"),
+make_option(c("-c", "--n_cells"), type="integer", default="100",
+                 help="number of cells", metavar="int")
+#make_option(c("-f", "--fold_change"), type="double", default="1.2",
+#                                 help="fold change", metavar="FC")
+)
+
+
+opt_parser = OptionParser(option_list=option_list)
+opt = parse_args(opt_parser);
+
+opt
+
+## how to call options in script
+opt$n_genes
+dir.create(opt$out,showWarnings=F)
+
+```
+
+
+## graphics
+To change page size an make better figures
+```{r,eval=F}
+ggsave(x,file="test.png",width=4,heigth=4,dpi=300)
+```
+
+
+drawing curves or functions:  
+form of:  
+curve(function,from,to)
+```{r}
+curve(sin, -2*pi, 2*pi, xname = "t")
+```
+using options for function
+```{r}
+curve(dnorm(x,mean=1,sd=2),-5,6)
+```
+When using plot: need to define a function
+```{r}
+ plot(function(x) {dnorm(x,mean =1,sd=2)},-5,6)
+```
+
+### ggplot
+```{r}
+library(ggplot2)
+x <- rnorm(10000,2,1)
+df <- data.frame(x=x)
+ggplot(df,aes(x)) +
+  geom_histogram(binwidth = 0.1,color="black",fill="white")
+```
+
+
+## base functions
+boxplot.stats
+```{r}
+x <- c(1:100, 1000)
+boxplot.stats(x)
+```
+
+expand.grid  
+generates all combinations
+```{r}
+expand.grid(height = seq(60, 80, 5), 
+            weight = seq(100, 300, 50),
+              sex = c("Male","Female"))
+```
+

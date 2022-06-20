@@ -1,0 +1,652 @@
+---
+title: "Power_Analysis.Rmd"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Basics  
+ability to detect a certain effect size, given sample size, and significance.  
+need to simulate data taking paraments from preliminary data sets.
+
+## Single Cell  
+
+parameters: cell detection rate  
+expression distribution  
+effect size  
+
+### Packages  
+- scPower  
+- Hierachicell  
+
+#### scPower  
+#### Hierachicell  
+
+1. filter gene counts  
+2. get data summarie  
+3. simulate data
+4. test power  
+
+example workflow:  
+```{r}
+library(hierarchicell)
+library(Seurat)
+library(tidyverse)
+```
+```{r eval=FALSE}
+## from seurat
+pilot <- readRDS("1_enhanced_harmonized_object.rds")
+
+### clusters must be assigned already
+meta <-pilot[[]]
+n_cells <- count(meta,seurat_annotations,name="n_cells")
+
+n_cells <- mutate(n_cells,frequency=n_cells/sum(n_cells))
+n_cells <- arrange(n_cells,frequency)
+
+## pick lowest frequency cell type to extract for power analysis
+## hieraricell requires raw counts or counts normalized by per million, but not log normalized
+extract_subsets <- function(i) {
+ Sub <- subset(pbmc3k,idents=i)
+ Meta <- Sub[[]]
+ C <-  as.matrix(Sub@assays$RNA@counts)
+ #N <- as.matrix(Sub@assays$RNA@data)
+ write.csv(Meta,paste0(i,"_meta.csv"))
+ write.csv(C,paste0(i,"_raw_counts.csv"))
+ #write.csv(N,paste0(i,"_normed_counts.csv"))
+
+}
+
+## make sure idents are set properly
+Idents(pbmc3k) <- "seurat_annotations"
+
+extract_subsets(40)
+```
+
+```{r}
+## for big clusters may need to use interactive sessoin
+counts <- read.csv("40_raw_counts.csv",row.names = 1)
+## from seurat data is the format:  
+## rows: genes  
+## cols: cells
+
+## for hierarchicell the rows should be cells
+counts_t <- as.data.frame(t(counts))
+counts_t <- rownames_to_column(counts_t,"Sample_Cell")
+## here cells are named as Sample.cell
+counts_t <- extract(counts_t,Sample_Cell,into=c("Sample","Cell"),regex="([MF][0-9]+)\\.(.*)")
+## format:  
+## Sample Cell Gene1 Gene2....GeneN
+counts_t <- select(counts_t,Cell,Sample,everything())
+
+## for hierarchicell to work data needs to filtered to remove cells with all zeros and genes with all zeros
+counts_filtered <- filter_counts(counts_t)
+data_summ <- compute_data_summaries(counts_filtered,type = "Raw")
+
+
+### diagnostic plots
+approximate_gene_mean(data_summ,plot = T)
+model_dispersion(data_summ,plot = T)
+model_inter(data_summ,plot=T)
+approximate_gene_drop(data_summ,plot=T)
+model_drop_sd(data_summ,plot=T)
+```
+```{r cache=TRUE}
+
+### finally power analysis
+ngenes <- 1400
+n_per_group <- 10
+## based on frequency of cluster and total number of cells per sample:
+## freq= 0.0004
+## ncells=5000
+## cells = 0.0004*5000
+## =2
+cells <- 2 
+fc <- c(1.2,1.5,1.7,2)
+
+powers <- map_dbl(fc,function(fc) {
+res <- capture.output(power_hierarchicell(data_summ,
+                    n_genes = ngenes,
+                    n_per_group =n_per_group,
+                    cells_per_case = cells,
+                    cells_per_control = cells,
+                    foldchange = fc),type="message")
+line <- grep("Hurdle",res,value = T)
+power <- as.numeric(gsub("Hurdle.*is: ","",line))
+return(power)
+})
+```
+
+#### How it works
+
+estimating parameters:  
+compute_data_summaries
+1. Normalizes if type "Raw"  
+```{r}
+expr <- counts_filtered
+n_individuals <- length(unique(expr[, 2]))
+n_individuals
+
+ids <- expr[, c(1, 2)]
+expr <- expr[, c(-1, -2)]
+expr <- t(as.matrix(apply(expr, 1, function(x) {
+            (x/sum(x)) * 1e+06
+})))
+expr <- cbind(ids, expr)
+```
+2.  Removes highly correlated genes
+```{r}
+reduced <- expr[, c(-1, -2)]
+genelist <- colnames(reduced)
+head(genelist)
+uncorrelatedgenes <- ids
+head(uncorrelatedgenes)
+
+
+### picking genes at random, removes genes with are that are highly correlated with that gene ( across cells)
+## keep going until either 500 iterations are complete or only 10 genes remain
+        for (i in 1:500) {
+            genename <- sample(genelist, 1)
+            drawngene <- reduced[, genename]
+            uncorrelatedgenes <- cbind(uncorrelatedgenes, drawngene)
+            ### correlation between drawn gene and all genes (absolute value)
+            correlations <- abs(stats::cor(drawngene, reduced))
+            genelist <- names(correlations[, which(correlations < 
+                0.25)])
+            reduced <- reduced[, genelist]
+            if (ncol(reduced) < 10) 
+                break
+        }
+        expr <- uncorrelatedgenes
+        rm(ids, uncorrelatedgenes, genelist, correlations, drawngene, 
+            genename, reduced)
+  
+```
+
+3. computing parameters:  
+- sample means (intraMeans)  
+- sample variances (intravar)  
+- sample dropout (dropout)  
+- Grand mean (mean of intraMeans)
+- interSD- sd of intraMeans
+- Dropout SD sd of sample Dropout
+```{r}
+## function for computing the variance by sample
+ computevar <- function(a) {
+            tapply(a, expr[, 2], function(a) {
+                stats::var(a[a != 0])
+            })
+ }
+
+temp.intravar <- sapply(expr[, c(-1, -2)], computevar)
+rownames(temp.intravar) <- paste0(rownames(temp.intravar), 
+            "_Var")
+
+summary(temp.intravar)  
+temp.intravar[1:5,1:20]
+## computes means per sample        
+computemeans <- function(x) {
+            tapply(x, expr[, 2], function(a) {
+                mean(a[a != 0])
+            })
+        }
+temp.intrameans <- sapply(expr[, c(-1, -2)], computemeans)
+rownames(temp.intrameans) <- paste0(rownames(temp.intrameans), 
+            "_Mean")
+temp.intrameans[1:5,1:6]  
+
+## compute dropoupt per sample
+#genes=0/totol
+computedrop <- function(x) {
+tapply(x, expr[, 2], function(a) {
+              length(a[which(a == 0)])/length(a)
+          })
+      }
+
+              
+temp.drop <- sapply(expr[, c(-1, -2)], computedrop)
+rownames(temp.drop) <- paste0(rownames(temp.drop), "_Drop")
+intravar <- na.omit(as.data.frame(cbind(c(temp.intravar), c(temp.intrameans))))
+colnames(intravar) <- c("IntraVar", "IntraMean")
+head(intravar)
+intravar$Dispersion <- (intravar$IntraMean^2)/((intravar$IntraVar) - 
+            intravar$IntraMean)
+        
+```
+```{r}
+        
+temp.intra <- as.data.frame(t(do.call("rbind", list(temp.intrameans, 
+            temp.intravar, temp.drop))))
+
+        ### gets the sd of genewise sample means
+temp.intra$InterStD <- as.numeric(as.character(apply(temp.intra[, 
+            1:n_individuals], 1, function(a) {
+            stats::sd(a[!is.na(a)])
+        })))
+## mean of means
+temp.intra$GrandMean <- as.numeric(as.character(apply(temp.intra[, 
+            1:n_individuals], 1, function(a) {
+            mean(a[!is.na(a)])
+        })))
+        
+        ## average of dropout across all samples
+temp.intra$DropOut <- as.numeric(as.character(apply(temp.intra[, 
+            (1 + (n_individuals * 2)):(n_individuals * 3)], 1, 
+            function(a) {
+                mean(a[!is.na(a)])
+            })))
+        
+        ## sd of average dropout
+        temp.intra$DropOutStD <- as.numeric(as.character(apply(temp.intra[, 
+            (1 + (n_individuals * 2)):(n_individuals * 3)], 1, 
+            function(a) {
+                stats::sd(a[!is.na(a)])
+            })))
+        
+        temp.intra2 <- temp.intra[, (ncol(temp.intra) - 3):ncol(temp.intra)]
+        main_summary <- as.data.frame(temp.intra)
+        data_summ <- list(n_individuals, main_summary, intravar)
+
+
+```
+End result is 3 lists:  
+- number of individuals  
+- data frame of overall mean, dropout and sd of individual means for each gene  
+- dataframe of per gene/sample means and dispersion, variance
+
+```{r}
+gene_data <- expr[,66,drop=F]
+gene_data <- cbind(expr[,2],gene_data)
+colnames(gene_data)[1] <- "samples" 
+
+mean_data <- group_by(gene_data,samples) %>% summarise(drawngene=mean(drawngene),sd=sd(drawngene))
+
+
+ggplot(data=gene_data,aes(samples,drawngene)) +
+  geom_point() +
+  geom_pointrange(data = mean_data,aes(ymin=drawngene-sd,ymax=drawngene + sd),color = "red",size=0.1) +
+  theme(axis.text.x = element_text(angle = 45,hjust=1))
+```
+Using these parameters simulate data:
+param: - n_cells per sample  
+         n_samples  
+         n_genes  
+         fold change
+
+
+Noise sources: (per gene) (gene expression is a gamma distribution)
+- poisson noise around number of cells per sample  
+- sample variation between replicates (normal)
+- dropout (gamma)
+ -cell to cell (negative binomial)
+
+
+```{r}
+data_summaries <- data_summ40
+n_genes = 1000
+                                   n_per_group = 3
+                                   n_cases = n_per_group
+                                   n_controls = n_per_group
+                                   cells_per_control = 150
+                                   cells_per_case = 150
+                                   ncells_variation_type = "Poisson"
+                                   foldchange = 1.2,
+                                   decrease_dropout = 0
+                                   alter_dropout_cases = 0
+                                   tSNE_plot = FALSE)
+
+ 
+      gene_mean_shape <- approximate_gene_mean(data_summaries)[1]
+      gene_mean_rate <- approximate_gene_mean(data_summaries)[2]
+      message("-------------------------------------------------------")
+      message("Distribution of grand means is a gamma\nwith shape: ",
+              round(gene_mean_shape,2),
+              " and rate: ",
+              round(gene_mean_rate,2))
+
+      gene_dropout_shape <- approximate_gene_drop(data_summaries)[1]
+      gene_dropout_rate <- approximate_gene_drop(data_summaries)[2]
+      message("-------------------------------------------------------")
+      message("Distribution for gene-wise dropout is a gamma \n with shape: ",
+              round(gene_dropout_shape,2),
+              " and rate: ",
+              round(gene_dropout_rate,2))
+
+      dropoutstd_beta0 <- model_drop_sd(data_summaries)[1]
+      dropoutstd_beta1 <- model_drop_sd(data_summaries)[2]
+      dropoutstd_beta2 <- model_drop_sd(data_summaries)[3]
+      message("-------------------------------------------------------")
+      message("Function for dropout SD is:\nDropoutStD = ",
+              round(dropoutstd_beta0,2)," + ",round(dropoutstd_beta1,2),"*DropOut + ",
+              round(dropoutstd_beta2,2),"*(DropOut**2)")
+
+      inter_beta0 <- 0
+      inter_beta1 <- model_inter(data_summaries)[1]
+
+      message("-------------------------------------------------------")
+      message("Function for inter-individual SD is:\nInterStDev = ",
+              round(inter_beta0,2)," + ",
+              round(inter_beta1,2),"*GrandMean)")
+
+      dispersion_beta0 <- model_dispersion(data_summaries)[1]
+      dispersion_beta1 <- model_dispersion(data_summaries)[2]
+      message("-------------------------------------------------------")
+      message("Function for dispersion is:\n exp(",
+              round(dispersion_beta0,2),
+              " + ",
+              round(dispersion_beta1,2),
+              "/IntraMean)")
+
+
+      message("-------------------------------------------------------")
+      message("Simulating cells ...")
+
+      if (ncells_variation_type == "Poisson") {
+        ncells_per_control <- stats::rpois(n = n_controls, lambda = cells_per_control)
+        ncells_per_case <- stats::rpois(n = n_cases, lambda = cells_per_case)
+      } else if (ncells_variation_type == "Fixed") {
+        ncells_per_control <- rep(times = n_controls, x = cells_per_control)
+        ncells_per_case <- rep(times = n_cases, x = cells_per_case)
+      } else if (ncells_variation_type == "NB") {
+        ncells_per_control <- stats::rnbinom(n = n_controls, mu = cells_per_control, size = 1)
+        ncells_per_case <- stats::rnbinom(n = n_cases, mu = cells_per_case, size = 1)
+      } else {
+        stop("The variation type you selected for the number
+             of cells per individual is not properly specified.
+             Please correct")
+      }
+
+      message("-------------------------------------------------------")
+      message("Simulating expression values ... ")
+
+      allcells <- NULL
+
+      simulate_gene <- function(){
+
+        grandmean <- stats::rgamma(n=1,shape=gene_mean_shape,rate=gene_mean_rate)
+        stddev_of_within_means <- inter_beta1*grandmean
+        fc <- ifelse(stats::rbinom(n=1, size=1, prob = 0.5) == 1, foldchange, 1/foldchange)
+        prob_zero <- stats::rgamma(n=1,shape=gene_dropout_shape,rate=gene_dropout_rate)
+        prob_zero <- ifelse(prob_zero > 1, stats::rgamma(n=1,shape=gene_dropout_shape,rate=gene_dropout_rate), prob_zero)
+        drop.sd <- dropoutstd_beta0 + dropoutstd_beta1*prob_zero + dropoutstd_beta2*(prob_zero**2)
+        drop.sd <- ifelse(drop.sd < 0, 0, drop.sd)
+        prob_zero <- rnorm(n=1,mean = prob_zero, sd = drop.sd)
+        prob_zero <- ifelse(prob_zero < 0, 0, prob_zero)
+        prob_zero <- ifelse(prob_zero > 1, 1, prob_zero)
+        prob_zero <- 1 - prob_zero
+
+        for (i in 1:n_controls){
+
+          controlmean <- grandmean + stats::rnorm(n=1,mean=0,sd=stddev_of_within_means)
+          controlmean <- ifelse(controlmean < 0, 0.0000001, controlmean)
+          control_size <- exp(dispersion_beta0 + (dispersion_beta1/controlmean))
+          controlcells <- stats::rnbinom(n=ncells_per_control[i],mu=controlmean,size=control_size)
+          controlcells <- ifelse(stats::rbinom(n=length(controlcells),size=1,prob=prob_zero)==1, 0, controlcells)
+          names(controlcells) <- paste0("Control_",i,"_Cell_",1:ncells_per_control[i])
+          allcells <- c(allcells,controlcells)
+        }
+
+        for (i in 1:n_cases){
+
+
+          casemean <- (grandmean*fc) + stats::rnorm(n=1,mean=0,sd=stddev_of_within_means)
+          casemean <- ifelse(casemean < 0, 0.0000001, casemean)
+          case_size <- exp(dispersion_beta0 + (dispersion_beta1/casemean))
+          casecells <- stats::rnbinom(n=ncells_per_case[i],mu=casemean,size=case_size)
+          casecells <- ifelse(stats::rbinom(n=length(casecells),size=1,prob=prob_zero)==1, 0, casecells)
+          names(casecells) <- paste0("Case_",i,"_Cell_",1:ncells_per_case[i])
+          allcells <- c(allcells,casecells)
+        }
+
+        allcells
+      }
+      all_genes <- as.data.frame(replicate(n_genes,simulate_gene()))
+      colnames(all_genes) <- paste0("Gene",1:n_genes)
+      all_genes <- data.frame(all_genes)
+      all_genes$ToSep <- rownames(all_genes)
+      all_genes$wellKey <- rownames(all_genes)
+      all_genes <- tidyr::separate(all_genes,ToSep,
+                            c("Status", "Donor_Number", "Cell", "Cell_Number"), sep="_")
+      all_genes$Cell_Number <- paste0("Cell_", all_genes$Cell_Number)
+      all_genes$DonorID <- paste0(all_genes$Status, "_", all_genes$Donor_Number)
+      all_genes <- all_genes[ ,c((n_genes + 5), (n_genes + 6), (n_genes + 1), 1:n_genes)]
+      all_genes <- all_genes[which(apply(all_genes[,c(-1,-2,-3)],1,mean) > 0),]
+
+      message("-------------------------------------------------------")
+      message("Generating tSNE plot ...")
+
+      counts <- stats::na.omit(as.matrix(t(all_genes[ ,-1:-3])))
+      pheno <- all_genes[ ,1:3]
+      all <- Seurat::CreateSeuratObject(counts, project="All_Cells", min.cells=3)
+      rownames(pheno) <- pheno[ ,1]
+      pheno <- pheno[ ,-1]
+      pheno$Status <- as.factor(pheno$Status)
+      pheno$DonorID <- as.factor(pheno$DonorID)
+      pheno <- pheno[colnames(all), ]
+      all(rownames(pheno) %in% colnames(all))
+      all(rownames(pheno) == colnames(all))
+      all <- Seurat::AddMetaData(object = all, metadata = pheno)
+      all <- Seurat::NormalizeData(all)
+      all <- Seurat::FindVariableFeatures(all,do.plot=F)
+      all <- Seurat::ScaleData(all)
+      all <- Seurat::RunPCA(all)
+      all <- Seurat::FindNeighbors(all)
+      all <- Seurat::FindClusters(all)
+      all <- Seurat::RunTSNE(all)
+
+      print(Seurat::DimPlot(object = all,reduction = "tsne",group.by="DonorID"))
+
+    }
+
+  } else {
+
+    message("Computing simulation parameters ...")
+
+    gene_mean_shape <- approximate_gene_mean(data_summaries)[1]
+    gene_mean_rate <- approximate_gene_mean(data_summaries)[2]
+    message("-------------------------------------------------------")
+    message("Distribution of grand means is a gamma\nwith shape: ",
+            round(gene_mean_shape,2),
+            " and rate: ",
+            round(gene_mean_rate,2))
+
+    gene_dropout_shape <- approximate_gene_drop(data_summaries)[1]
+    gene_dropout_rate <- approximate_gene_drop(data_summaries)[2]
+    message("-------------------------------------------------------")
+    message("Distribution for gene-wise dropout is a gamma \n with shape: ",
+            round(gene_dropout_shape,2),
+            " and rate: ",
+            round(gene_dropout_rate,2))
+
+    dropoutstd_beta0 <- model_drop_sd(data_summaries)[1]
+    dropoutstd_beta1 <- model_drop_sd(data_summaries)[2]
+    dropoutstd_beta2 <- model_drop_sd(data_summaries)[3]
+    message("-------------------------------------------------------")
+    message("Function for dropout SD is:\nDropoutStD = ",
+            round(dropoutstd_beta0,2)," + ",round(dropoutstd_beta1,2),"*DropOut + ",
+            round(dropoutstd_beta2,2),"*(DropOut**2)")
+
+    inter_beta0 <- 0
+    inter_beta1 <- model_inter(data_summaries)[1]
+
+    message("-------------------------------------------------------")
+    message("Function for inter-individual SD is:\nInterStDev = ",
+            round(inter_beta0,2)," + ",
+            round(inter_beta1,2),"*GrandMean)")
+
+    dispersion_beta0 <- model_dispersion(data_summaries)[1]
+    dispersion_beta1 <- model_dispersion(data_summaries)[2]
+    message("-------------------------------------------------------")
+    message("Function for dispersion is:\n exp(",
+            round(dispersion_beta0,2),
+            " + ",
+            round(dispersion_beta1,2),
+            "/IntraMean)")
+
+
+    message("-------------------------------------------------------")
+    message("Simulating cells ...")
+
+    if (ncells_variation_type == "Poisson") {
+      ncells_per_control <- stats::rpois(n = n_controls, lambda = cells_per_control)
+      ncells_per_case <- stats::rpois(n = n_cases, lambda = cells_per_case)
+    } else if (ncells_variation_type == "Fixed") {
+      ncells_per_control <- rep(times = n_controls, x = cells_per_control)
+      ncells_per_case <- rep(times = n_cases, x = cells_per_case)
+    } else if (ncells_variation_type == "NB") {
+      ncells_per_control <- stats::rnbinom(n = n_controls, mu = cells_per_control, size = 1)
+      ncells_per_case <- stats::rnbinom(n = n_cases, mu = cells_per_case, size = 1)
+    } else {
+      stop("The variation type you selected for the number
+             of cells per individual is not properly specified.
+             Please correct")
+    }
+
+    message("-------------------------------------------------------")
+    message("Simulating expression values ... ")
+
+    allcells <- NULL
+
+    simulate_gene <- function(){
+
+      grandmean <- stats::rgamma(n=1,shape=gene_mean_shape,rate=gene_mean_rate)
+      stddev_of_within_means <- inter_beta1*grandmean
+      fc <- ifelse(stats::rbinom(n=1, size=1, prob = 0.5) == 1, foldchange, 1/foldchange)
+      prob_zero <- stats::rgamma(n=1,shape=gene_dropout_shape,rate=gene_dropout_rate)
+      prob_zero <- ifelse(prob_zero > 1, stats::rgamma(n=1,shape=gene_dropout_shape,rate=gene_dropout_rate), prob_zero)
+      drop.sd <- dropoutstd_beta0 + dropoutstd_beta1*prob_zero + dropoutstd_beta2*(prob_zero**2)
+      drop.sd <- ifelse(drop.sd < 0, 0, drop.sd)
+      prob_zero <- rnorm(n=1,mean = prob_zero, sd = drop.sd)
+      prob_zero <- ifelse(prob_zero < 0, 0, prob_zero)
+      prob_zero <- ifelse(prob_zero > 1, 1, prob_zero)
+      prob_zero <- 1 - prob_zero
+
+      for (i in 1:n_controls){
+
+        controlmean <- grandmean + stats::rnorm(n=1,mean=0,sd=stddev_of_within_means)
+        controlmean <- ifelse(controlmean < 0, 0.0000001, controlmean)
+        control_size <- exp(dispersion_beta0 + (dispersion_beta1/controlmean))
+        control_size <- ifelse(control_size<=0,0.0000001,control_size)
+        controlcells <- stats::rnbinom(n=ncells_per_control[i],mu=controlmean,size=control_size)
+        controlcells <- ifelse(stats::rbinom(n=length(controlcells),size=1,prob=prob_zero)==1, 0, controlcells)
+        names(controlcells) <- paste0("Control_",i,"_Cell_",1:ncells_per_control[i])
+        allcells <- c(allcells,controlcells)
+      }
+
+      for (i in 1:n_cases){
+
+
+        casemean <- (grandmean*fc) + stats::rnorm(n=1,mean=0,sd=stddev_of_within_means)
+        casemean <- ifelse(casemean < 0, 0.0000001, casemean)
+        case_size <- exp(dispersion_beta0 + (dispersion_beta1/casemean))
+        case_size <- ifelse(case_size<=0,0.0000001,control_size)
+        casecells <- stats::rnbinom(n=ncells_per_case[i],mu=casemean,size=case_size)
+        casecells <- ifelse(stats::rbinom(n=length(casecells),size=1,prob=prob_zero)==1, 0, casecells)
+        names(casecells) <- paste0("Case_",i,"_Cell_",1:ncells_per_case[i])
+        allcells <- c(allcells,casecells)
+      }
+
+      allcells
+    }
+
+    all_genes <- as.data.frame(replicate(n_genes,simulate_gene()))
+    colnames(all_genes) <- paste0("Gene",1:n_genes)
+    all_genes <- data.frame(all_genes)
+    all_genes$ToSep <- rownames(all_genes)
+    all_genes$wellKey <- rownames(all_genes)
+    all_genes <- tidyr::separate(all_genes,ToSep,
+                                 c("Status", "Donor_Number", "Cell", "Cell_Number"), sep="_")
+    all_genes$Cell_Number <- paste0("Cell_", all_genes$Cell_Number)
+    all_genes$DonorID <- paste0(all_genes$Status, "_", all_genes$Donor_Number)
+    all_genes <- all_genes[ ,c((n_genes + 5), (n_genes + 6), (n_genes + 1), 1:n_genes)]
+    all_genes <- all_genes[which(apply(all_genes[,c(-1,-2,-3)],1,mean) > 0),]
+
+
+  }
+
+  message("-------------------------------------------------------")
+  message("All done!")
+  as.data.frame(all_genes)
+
+  }
+
+# disp_funct <- function(beta1,beta2,mean) {
+#   exp(beta1 + (beta2/mean))
+# }
+# 
+# 
+# 
+# grandmean <- stats::rgamma(n=1,shape=gene_mean_shape,rate=gene_mean_rate)
+# 
+# exp(6.98 + -2987.56/IntraMean)
+# 
+# disp_funct(6.98,-2987.56,10000)
+```
+
+
+```{r}
+genecounts <- as.matrix(t(all_genes[,c(-1,-2,-3)]))
+    coldata <- all_genes[,1:3]
+    coldata$Status <- as.factor(coldata$Status)
+    genecounts <- genecounts[which(apply(genecounts, 1, mean) > 5), ]
+    genecounts <- genecounts[,rownames(coldata)]
+    log2counts <- log2(genecounts + 1)
+
+    fData <- data.frame(primerid=rownames(genecounts))
+    sca <- suppressMessages(MAST::FromMatrix(exprsArray=log2counts, cData=coldata, fData=fData))
+
+    cdr2 <- colSums(SummarizedExperiment::assay(sca)>0)
+    SummarizedExperiment::colData(sca)$ngeneson <- scale(cdr2)
+    SummarizedExperiment::colData(sca)$Status <-
+      factor(SummarizedExperiment::colData(sca)$Status)
+    SummarizedExperiment::colData(sca)$DonorID <-
+      factor(SummarizedExperiment::colData(sca)$DonorID)
+
+  zlmCond <- suppressWarnings(MAST::zlm(~ ngeneson + Status + (1 | DonorID),
+                                          sca, method='glmer',ebayes = F,
+                                          strictConvergence = FALSE))  
+    
+    summaryCond <- suppressWarnings(MAST::summary(zlmCond,
+                                                  doLRT='StatusControl'))
+    summaryDt <- summaryCond$datatable
+
+    fcHurdle <-  summaryDt[summaryDt$contrast=='StatusControl' & summaryDt$component=='C', c(1,4)]
+    fcHurdle <- stats::na.omit(as.data.frame(fcHurdle))
+    
+pval <- 0.05  
+signif <- ifelse(fcHurdle[,2] < pval, 1, 0)
+      rate <- mean(signif)
+      message(paste0("Continuous Power for ",pval," is: ", rate))
+      
+
+fcHurdle <-  summaryDt[summaryDt$contrast=='StatusControl' & summaryDt$component=='H', c(1,4)]
+    fcHurdle <- stats::na.omit(as.data.frame(fcHurdle))            
+
+signif <- ifelse(fcHurdle[,2] < pval, 1, 0)
+      rate <- mean(signif)
+      message(paste0("Hurdle Power for ",pval," is: ", rate))
+```
+
+
+
+### DE methods for single cell
+- single sample
+- pseudobulk 
+- hierarchical models that take into account the correlation between cells from sampe individual
+```{r}
+
+disp <- function(beta0,beta1,mean) {
+  exp(beta0 + (beta1/mean))
+
+}
+ exp(3.84 + 123.24/IntraMean)
+x <- seq(0,10)
+y <- disp(beta0 = 3.84 ,beta1 = 123.24,mean=x)
+plot_df <- data.frame(x,y)
+
+ggplot(plot_df,aes(x,y)) +
+  geom_point()
+```
+

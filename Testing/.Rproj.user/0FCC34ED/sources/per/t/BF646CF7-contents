@@ -1,0 +1,1181 @@
+closeAllConnections()
+rm(list = ls())
+ dev.off()
+setwd(
+  "/Users/skailasam/Desktop/mnt/projects/WGBS_DGauguier_anal/Analysis_report/"
+)
+
+a <- c(1:100)
+figcount <- rep(sprintf("Figure_%02d_", a))
+fcnt <- 0
+
+a <- c(1:100)
+tablecount <- rep(sprintf("Table_%02d_", a))
+tcnt <- 0
+
+
+# ##############################################################################################################################
+figdir <-
+  c(
+    "/Users/skailasam/Desktop/mnt/projects/WGBS_DGauguier_anal/Analysis_report/output_FC_1.5_FDR_0.10/"
+  )
+tabdir <-
+  c(
+    "/Users/skailasam/Desktop/mnt/projects/WGBS_DGauguier_anal/Analysis_report/output_FC_1.5_FDR_0.10/Tables/"
+  )
+FCcutoff <- c(1.5)  # FDR < 5 %
+log2FCcutval <- c(log2(FCcutoff))
+aPVALcutoff <- c(0.10)  # adj.P.val < 5 %
+avglogCPMcutoff <- 4
+# ##############################################################################################################################
+
+
+# myDir<- setwd("output/")
+# file.remove(file.path(myDir, list.files()))
+
+
+library(methylKit)
+library(edgeR)
+library(ggplot2)
+library(reshape2)
+library(gplots)
+library(gridExtra)
+library(grid)
+library(cowplot)
+library(magick)
+library(data.table)
+
+## ----readcounts----------------------------------------------------------
+GenewiseCounts <- read.delim("/Users/skailasam/Desktop/mnt/projects/WGBS_DGauguier_anal/Analysis_reportDGE/rawCountMatrix.csv",
+                             header = T,
+                             sep = "\t",
+                             row.names = 1
+)
+out <- GenewiseCounts[c(-1)]
+
+# 
+
+##-------------------------------------------------------------------------
+samplesheet <- read.delim("/Users/skailasam/Desktop/mnt/projects/Susta_Chicken_Breast_Myopathy_RNA-seq/Samplesheet.csv",
+                          header = T,
+                          sep = ","
+)
+
+colnames(GenewiseCounts)<- c("Symbol","n1","n2","n3","n4","n5","n6","s7","s1","s2","s3","s4","s5","s6","w5","w1","w2","w3","w4")
+
+
+GenewiseCounts <- GenewiseCounts[, c(1,   2,3,4,5,6,7, 9,10,11,12,13,14,8,  16,17,18,19,15 )]
+
+
+row.names(samplesheet)<- samplesheet$Sample.number
+
+samplesheet
+# out_file <- paste0(figdir,"/DataTables_summaryInfo.csv")
+# sep <- ","
+# cat("Note : Contains list of samples considered for this analysis after removing outliers\n", file = out_file)
+# write.table(samplesheet, out_file, append = TRUE, sep = sep)
+
+##-----Group---------------------------------------------------------------
+anno <- data.frame(
+  "Condition" = samplesheet$library.name,
+  "Group" = c(rep("n", 6), rep("s",7),rep("w",5)),
+  "RepID"     = c(c(1:6),c(1:7),c(1:5))
+)
+## ----design--------------------------------------------------------
+design1 = model.matrix(~ 0 + Group, data = anno)
+is.fullrank(design1)
+design1
+##-----Group---------------------------------------------------------------
+
+dge <-
+  DGEList(GenewiseCounts[-c(1)], group = anno$Group, genes =
+            GenewiseCounts[, 1, drop = FALSE])
+#rownames(dge) <- dge$genes$Symbol
+genename <- as.data.frame(dge$genes)
+genename$geneid<- rownames(genename)
+
+#delete duplicate genesymbols
+o <- order(rowSums(dge$counts))
+dge <- dge[o, ]
+d <- duplicated(dge$genes$Symbol)
+dge <- dge[!d, ]
+
+
+
+
+## -------contrast----------------------------------------------------------
+colnames(design1) <- make.names(colnames(design1))
+contr.matrix <-
+  makeContrasts(
+    S_vs_N = (Groups - Groupn),
+    W_vs_N = (Groupw - Groupn),
+    S_vs_W = (Groups - Groupn) - (Groupw - Groupn),
+    levels = colnames(design1)
+  )
+contr.matrix
+
+
+
+# # Obtain CPMs
+myCPM <- as.data.frame(cpm(dge$counts, log = T))
+# # Have a look at the output
+#myCPM$Symbol <- rownames(myCPM)
+myCPM$geneid <- rownames(myCPM)
+library(dplyr)
+combo <- inner_join(genename, myCPM)
+head(myCPM)
+tcnt <- tcnt+1
+write.csv(
+  combo,
+  file = file.path(tabdir, paste0(tablecount[tcnt], "unfiltered_logCPM_matrix.csv")),
+  quote = TRUE,
+  row.names = F
+)
+
+
+
+library(RColorBrewer)
+
+
+fcnt <- fcnt + 1
+png(
+  file.path(
+    figdir,
+    paste0(figcount[fcnt], "barplot_libray_size_countfilt2.png")
+  ),
+  width = 10,
+  height = 8,
+  units = 'in',
+  res = 300
+)
+col.cell <-
+  c("#d73027",
+    "#fc8d59",
+    "#fee090",
+    "#33a02c",
+    "#91bfdb",
+    "#4575b4")[anno$Group]
+barplot(
+  dge$samples$lib.size,
+  #names = anno$Condition,
+  las = 2,
+  col = col.cell
+) +
+  # Add a title to the plot
+  title("Barplot of library sizes")
+dev.off()
+
+
+
+v <- voom(dge, design1  , plot = FALSE)
+
+# PCA
+##################################################################
+exp = v$E
+x = prcomp(as.matrix(t(exp)))
+perc_pc <- x$sdev ^ 2 / sum(x$sdev ^ 2) * 100
+
+pca.ap = x$x
+pca.ap = data.frame(pca.ap)
+pca.ap[, "Group"] <- anno$Group
+pca.ap[, "RepID"] <- anno$RepID
+
+i = 1
+j = 2
+fcnt <- fcnt + 1
+png(
+  file = file.path(figdir,
+                   paste0(figcount[fcnt], "PCA_sample_group.png")),
+  width = 10,
+  height = 8,
+  units = 'in',
+  res = 300
+)
+
+ggplot(pca.ap, aes(
+  x = eval(parse(text = paste0("PC", i))),
+  y = eval(parse(text = paste0("PC", j))),
+  colour = Group,
+  #   shape = RepID
+)) +
+  geom_point(stroke = 1.5,
+             size = 3,
+             alpha = 1) +
+  scale_color_manual(values = c(
+    "#d73027",
+    "#fc8d59",
+    "#fee090",
+    "#33a02c",
+    "#91bfdb",
+    "#4575b4"
+  )) +
+  
+  # scale_color_manual(values = c("dodgerblue3","seagreen2","firebrick3","#E69F00", "darkmagenta", "#ea10c9")) +
+  scale_shape_manual(values = c(1, 2, 3, 4)) +
+  geom_text(
+    aes(label = RepID),
+    size = 4,
+    check_overlap = FALSE,
+    nudge_y = 4
+  ) +
+  xlab(paste0("PC", i, ": ", round(perc_pc[[i]], 2), "%")) +
+  ylab(paste0("PC", j, ": ", round(perc_pc[[j]], 2), "%")) +
+  #theme_bw(base_size = 15)  +
+  theme(
+    axis.text.x = element_text(
+      color = "grey20",
+      size = 20,
+      angle = 90,
+      hjust = .5,
+      vjust = .5,
+      face = "plain"
+    ),
+    axis.text.y = element_text(
+      color = "grey20",
+      size = 20,
+      angle = 0,
+      hjust = 1,
+      vjust = 0,
+      face = "plain"
+    ),
+    axis.title.x = element_text(
+      color = "grey20",
+      size = 20,
+      angle = 0,
+      hjust = .5,
+      vjust = 0,
+      face = "plain"
+    ),
+    axis.title.y = element_text(
+      color = "grey20",
+      size = 20,
+      angle = 90,
+      hjust = .5,
+      vjust = .5,
+      face = "plain"
+    )
+  ) +
+  # Change the appearance and the orientation angle
+  # of axis tick labels
+  theme(
+    axis.text.x = element_text(
+      face = "plain",
+      color = "black",
+      size = 14,
+      angle = 0
+    ),
+    axis.text.y = element_text(
+      face = "plain",
+      color = "black",
+      size = 14,
+      angle = 90
+    )
+  ) +
+  
+  
+  
+  theme(
+    #  panel.grid.major = element_blank(),
+    #  panel.grid.minor = element_blank(),
+    panel.border = element_rect(colour = "black", fill = NA),
+    #  panel.background = element_blank(),
+    axis.line = element_line(colour = "black"),
+    axis.line.x = element_line(colour = "black"),
+    axis.line.y.left = element_line(colour = "black")
+  ) + theme(aspect.ratio = 1)
+#+ theme(legend.position = "none")
+#hc <- hclust(dist(as.matrix((t(exp)))), "ward.D2")
+
+dev.off()
+
+
+### MDS plot
+
+mds <- plotMDS(dge)
+toplot <-
+  data.frame(
+    Dim1 = mds$x,
+    Dim2 = mds$y,
+    RepID = anno$RepID,
+    Group = anno$Group
+  )
+fcnt <- fcnt + 1
+png(
+  file = file.path(figdir,
+                   paste0(figcount[fcnt], "MDS_sample_group.png")),
+  width = 10,
+  height = 8,
+  units = 'in',
+  res = 300
+)
+
+ggplot(toplot, aes(Dim1, Dim2, colour = Group)) +
+  geom_text(
+    aes(label = RepID),
+    size = 4,
+    check_overlap = FALSE,
+    nudge_y = 0.05
+  ) +
+  geom_point(stroke = 1.5,
+             size = 3,
+             alpha = 1) +
+  #  title("MDS plot") +
+  xlab("Leading logFC dim 1") +
+  ylab("Leading logFC dim 2") +
+  scale_color_manual(values = c(
+    "#d73027",
+    "#fc8d59",
+    "#fee090",
+    "#33a02c",
+    "#91bfdb",
+    "#4575b4"
+  ))     +
+  #theme_bw(base_size = 15)  +
+  theme(
+    axis.text.x = element_text(
+      color = "grey20",
+      size = 20,
+      angle = 90,
+      hjust = .5,
+      vjust = .5,
+      face = "plain"
+    ),
+    axis.text.y = element_text(
+      color = "grey20",
+      size = 20,
+      angle = 0,
+      hjust = 1,
+      vjust = 0,
+      face = "plain"
+    ),
+    axis.title.x = element_text(
+      color = "grey20",
+      size = 20,
+      angle = 0,
+      hjust = .5,
+      vjust = 0,
+      face = "plain"
+    ),
+    axis.title.y = element_text(
+      color = "grey20",
+      size = 20,
+      angle = 90,
+      hjust = .5,
+      vjust = .5,
+      face = "plain"
+    )
+  ) +
+  # Change the appearance and the orientation angle
+  # of axis tick labels
+  theme(
+    axis.text.x = element_text(
+      face = "plain",
+      color = "black",
+      size = 14,
+      angle = 0
+    ),
+    axis.text.y = element_text(
+      face = "plain",
+      color = "black",
+      size = 14,
+      angle = 90
+    )
+  ) +
+  
+  theme(
+    # panel.grid.major = element_blank(),
+    # panel.grid.minor = element_blank(),
+    panel.border = element_rect(colour = "black", fill = NA),
+    # panel.background = element_blank(),
+    axis.line = element_line(colour = "black"),
+    axis.line.x = element_line(colour = "black"),
+    axis.line.y.left = element_line(colour = "black")
+  ) + theme(aspect.ratio = 1)
+#+ theme(legend.position = "none")
+#hc <- hclust(dist(as.matrix((t(exp)))), "ward.D2")
+#  theme(aspect.ratio = 1) + theme(legend.position = "none")
+dev.off()
+
+
+
+
+
+## ----dropNAsymbols-------------------------------------------------------
+dge <- dge[!is.na(dge$genes),]
+dim(dge)
+
+#rownames(dge) <- dge$genes$Symbol
+## ----keep----------------------------------------------------------------
+
+#option 1
+#keep <- rowSums(cpm(dge) > 0.5) >= 2
+#countsPerMillion <- cpm(dge)
+#summary(countsPerMillion)
+
+#countCheck <- countsPerMillion > 1
+#head(countCheck)
+#keep <- which(rowSums(countCheck) >= 5)
+#dge <- dge[keep, ]
+#summary(cpm(dge)) #compare this to the original summary
+#xs4321  `1654`
+#option 2
+keep <-
+  filterByExpr(dge) #keeps rows that have worthwhile counts in a minumum number
+
+table(keep)
+## ----filter--------------------------------------------------------------
+dim(dge)
+dge <- dge[keep, , keep.lib.sizes = FALSE]
+dim(dge)
+
+
+## ----norm----------------------------------------------------------------
+dge <- calcNormFactors(dge, method = "TMM")
+dge$samples
+
+# # Obtain CPMs
+myCPM2 <- cpm(dge$counts, log = T)
+
+myCPM2$Symbol <- rownames(myCPM2)
+
+library(dplyr)
+combo2 <- inner_join(genename, myCPM2)
+head(myCPM2)
+tcnt <- tcnt + 1
+write.csv(
+  combo2,
+  file = file.path(tabdir, paste0(tablecount[tcnt], "filtered_logCPM_matrix.csv")),
+  quote = TRUE,
+  row.names = F
+)
+fcnt <- fcnt + 1
+png(
+  file.path(
+    figdir,
+    paste0(figcount[fcnt], "barplot_libray_size_countfilt2.png")
+  ),
+  width = 10,
+  height = 8,
+  units = 'in',
+  res = 300
+)
+col.cell <-
+  c("#d73027",
+    "#fc8d59",
+    "#fee090",
+    "#33a02c",
+    "#91bfdb",
+    "#4575b4")[anno$Group]
+barplot(
+  dge$samples$lib.size,
+  names = anno$Condition,
+  las = 2,
+  col = col.cell
+) +
+  # Add a title to the plot
+  title("Barplot of library sizes")
+dev.off()
+
+
+
+v <- voom(dge, design1  , plot = FALSE)
+
+# PCA
+##PCA################################################################
+exp = v$E
+x = prcomp(as.matrix(t(exp)))
+perc_pc <- x$sdev ^ 2 / sum(x$sdev ^ 2) * 100
+
+pca.ap = x$x
+pca.ap = data.frame(pca.ap)
+pca.ap[, "Group"] <- anno$Group
+pca.ap[, "RepID"] <- anno$RepID
+
+i = 1
+j = 2
+fcnt <- fcnt + 1
+png(
+  file = file.path(figdir,
+                   paste0(figcount[fcnt], "PCA_sample_group.png")),
+  width = 10,
+  height = 8,
+  units = 'in',
+  res = 300
+)
+
+ggplot(pca.ap, aes(
+  x = eval(parse(text = paste0("PC", i))),
+  y = eval(parse(text = paste0("PC", j))),
+  colour = Group,
+  #   shape = RepID
+)) +
+  geom_point(stroke = 1.5,
+             size = 3,
+             alpha = 1) +
+  scale_color_manual(values = c(
+    "#d73027",
+    "#fc8d59",
+    "#fee090"
+  )) +
+  
+  # scale_color_manual(values = c("dodgerblue3","seagreen2","firebrick3","#E69F00", "darkmagenta", "#ea10c9")) +
+  scale_shape_manual(values = c(1, 2, 3, 4)) +
+  geom_text(
+    aes(label = RepID),
+    size = 4,
+    check_overlap = FALSE,
+    nudge_y = 3
+  ) +
+  xlab(paste0("PC", i, ": ", round(perc_pc[[i]], 2), "%")) +
+  ylab(paste0("PC", j, ": ", round(perc_pc[[j]], 2), "%")) +
+  #theme_bw(base_size = 15)  +
+  theme(
+    axis.text.x = element_text(
+      color = "grey20",
+      size = 20,
+      angle = 90,
+      hjust = .5,
+      vjust = .5,
+      face = "plain"
+    ),
+    axis.text.y = element_text(
+      color = "grey20",
+      size = 20,
+      angle = 0,
+      hjust = 1,
+      vjust = 0,
+      face = "plain"
+    ),
+    axis.title.x = element_text(
+      color = "grey20",
+      size = 20,
+      angle = 0,
+      hjust = .5,
+      vjust = 0,
+      face = "plain"
+    ),
+    axis.title.y = element_text(
+      color = "grey20",
+      size = 20,
+      angle = 90,
+      hjust = .5,
+      vjust = .5,
+      face = "plain"
+    )
+  ) +
+  # Change the appearance and the orientation angle
+  # of axis tick labels
+  theme(
+    axis.text.x = element_text(
+      face = "plain",
+      color = "black",
+      size = 14,
+      angle = 0
+    ),
+    axis.text.y = element_text(
+      face = "plain",
+      color = "black",
+      size = 14,
+      angle = 90
+    )
+  ) +
+  
+  
+  
+  theme(
+    # panel.grid.major = element_blank(),
+    # panel.grid.minor = element_blank(),
+    panel.border = element_rect(colour = "black", fill = NA),
+    # panel.background = element_blank(),
+    axis.line = element_line(colour = "black"),
+    axis.line.x = element_line(colour = "black"),
+    axis.line.y.left = element_line(colour = "black")
+  ) + theme(aspect.ratio = 1)
+#+ theme(legend.position = "none")
+#hc <- hclust(dist(as.matrix((t(exp)))), "ward.D2")
+
+dev.off()
+
+
+
+
+### MDS plot
+
+
+mds <- plotMDS(dge)
+toplot <-
+  data.frame(
+    Dim1 = mds$x,
+    Dim2 = mds$y,
+    RepID = anno$RepID,
+    Group = anno$Group
+  )
+fcnt <- fcnt + 1
+png(
+  file = file.path(figdir,
+                   paste0(figcount[fcnt], "MDS_sample_group.png")),
+  width = 10,
+  height = 8,
+  units = 'in',
+  res = 300
+)
+
+ggplot(toplot, aes(Dim1, Dim2, colour = Group)) +
+  geom_text(
+    aes(label = RepID),
+    size = 4,
+    check_overlap = FALSE,
+    nudge_y = 0.05
+  ) +
+  geom_point(stroke = 1.5,
+             size = 3,
+             alpha = 1) +
+  #  title("MDS plot") +
+  xlab("Leading logFC dim 1") +
+  ylab("Leading logFC dim 2") +
+  scale_color_manual(values = c(
+    "#d73027",
+    "#fc8d59",
+    "#fee090",
+    "#33a02c",
+    "#91bfdb",
+    "#4575b4"
+  ))     +
+  #theme_bw(base_size = 15)  +
+  theme(
+    axis.text.x = element_text(
+      color = "grey20",
+      size = 20,
+      angle = 90,
+      hjust = .5,
+      vjust = .5,
+      face = "plain"
+    ),
+    axis.text.y = element_text(
+      color = "grey20",
+      size = 20,
+      angle = 0,
+      hjust = 1,
+      vjust = 0,
+      face = "plain"
+    ),
+    axis.title.x = element_text(
+      color = "grey20",
+      size = 20,
+      angle = 0,
+      hjust = .5,
+      vjust = 0,
+      face = "plain"
+    ),
+    axis.title.y = element_text(
+      color = "grey20",
+      size = 20,
+      angle = 90,
+      hjust = .5,
+      vjust = .5,
+      face = "plain"
+    )
+  ) +
+  # Change the appearance and the orientation angle
+  # of axis tick labels
+  theme(
+    axis.text.x = element_text(
+      face = "plain",
+      color = "black",
+      size = 14,
+      angle = 0
+    ),
+    axis.text.y = element_text(
+      face = "plain",
+      color = "black",
+      size = 14,
+      angle = 90
+    )
+  ) +
+  
+  theme(
+    # panel.grid.major = element_blank(),
+    #  panel.grid.minor = element_blank(),
+    panel.border = element_rect(colour = "black", fill = NA),
+    # panel.background = element_blank(),
+    axis.line = element_line(colour = "black"),
+    axis.line.x = element_line(colour = "black"),
+    axis.line.y.left = element_line(colour = "black")
+  ) + theme(aspect.ratio = 1)
+#+ theme(legend.position = "none")
+#hc <- hclust(dist(as.matrix((t(exp)))), "ward.D2")
+#  theme(aspect.ratio = 1) + theme(legend.position = "none")
+dev.off()
+
+
+
+##DEG#####
+dge <- estimateDisp(dge, design1)
+fcnt <- fcnt + 1
+png(
+  file = file.path(figdir,
+                   paste0(figcount[fcnt], "Dispersion_estimate.png")),
+  width = 10,
+  height = 8,
+  units = 'in',
+  res = 300
+)
+plotBCV(dge, cex = 0.5, main = "Dispersion Estimate")
+dev.off()
+
+v <- voom(dge, design1, plot = FALSE)
+fit <- lmFit(v, design1)
+plotSA(fit, main = "voom: Mean-variance trend")
+
+vfit <- contrasts.fit(fit, contrasts = contr.matrix)
+efit <- eBayes(vfit)
+fcnt <- fcnt + 1
+png(
+  file = file.path(figdir,
+                   paste0(figcount[fcnt], "Mean-variance_trend.png")),
+  width = 10,
+  height = 8,
+  units = 'in',
+  res = 300
+)
+plotSA(efit, main = "Final model: Mean-variance trend")
+dev.off()
+
+
+
+
+# fit <-glmFit(dge,design1)
+#
+# lrt <- glmLRT(fit,coef = 1)
+# topTags(lrt)
+# print(summary(decideTests(lrt, p.value = aPVALcutoff, lfc = log2FCcutval)))
+# lrt <- glmLRT(fit,coef = 2)
+# topTags(lrt)
+# print(summary(decideTests(lrt, p.value = aPVALcutoff, lfc = log2FCcutval)))
+# lrt <- glmLRT(fit,coef = 3)
+# topTags(lrt)
+# print(summary(decideTests(lrt, p.value = aPVALcutoff, lfc = log2FCcutval)))
+
+summary.table <-
+  as.data.frame.matrix(summary(decideTests(efit, p.value = aPVALcutoff, lfc = log2FCcutval)))
+summary.table <- t(summary.table)
+newdf <-
+  rbind(summary.table, data.table(Down = paste0("*FC >= ", FCcutoff, "*FDR >= ", aPVALcutoff)), fill =
+          T)
+
+
+
+dfrownames <- as.data.frame(c(row.names(summary.table), ""))
+colnames(dfrownames) <- c("Group")
+df.combo <- cbind(dfrownames, newdf)
+tcnt <- tcnt + 1
+#rownames(newdf)<- NULL
+write.csv(df.combo,
+            file.path(tabdir,paste0(tablecount[tcnt], "table_summary_DEG_stat.csv")),
+            row.names = F)
+
+fcnt <- fcnt + 1
+png(
+  file = file.path(figdir,paste0(figcount[fcnt], "table_summary_DEG_stat.png")),
+  width = 10,
+  height = 8,
+  units = 'in',
+  res = 300
+)
+grid.table(df.combo)
+dev.off()
+
+
+###Res1####
+#create contrast list
+contrast_list <-
+  c("S_vs_N",
+    "W_vs_N",
+    "S_vs_W"
+  )
+my_contrast_list <- list()
+
+#DEG RAW for  all  comparison
+
+
+for (y in 1:3) {
+  tcnt <- tcnt + 1
+ # y =1
+  #Loop through the   comparisons
+  # RES1
+  res1 <-
+    data.frame(topTable(
+      efit,
+      coef = contrast_list[y],
+      adjust = "BH",
+      n = nrow(dge$counts)
+      # sort.by = "none"
+    ))[, c("Symbol", "logFC", "P.Value", "adj.P.Val")]
+  
+  
+  write.csv(
+    res1,
+    file = file.path(
+      tabdir,
+      paste0(tablecount[tcnt],"DEG_TotalValidGenes_in_Genome_","_",
+        contrast_list[y],
+        ".csv"
+      )
+    ),
+    quote = TRUE,
+    row.names = F
+  )
+  
+  #my_contrast_list[[y]] <- res1
+  write.table(
+    res1$Symbol,
+    file = file.path(
+      tabdir,
+      paste(tablecount[tcnt],
+      contrast_list[y],
+      "genenames_DEG_TotalValidGenes_in_Genome_GO_bg.txt",
+      sep = "_"
+    )
+    ),
+    col.names = F,
+    row.names = F,
+    quote = FALSE,
+    sep = "\t"
+  )
+  my_contrast_list[[y]] <- res1
+}
+
+
+###Res2####
+
+# RES2
+
+for (y in 2:3) {
+  #Loop through the
+  tcnt <- tcnt + 1
+  res2 <-
+    data.frame(
+      topTable(
+        efit,
+        coef = contrast_list[y],
+        adjust = "BH",
+        n = nrow(dge$counts) ,
+        p.value = aPVALcutoff,
+        lfc = log2FCcutval
+        # sort.by = "none"
+      )
+    )[, c("Symbol", "logFC", "P.Value", "adj.P.Val")]
+  
+
+  # TOTAL DEG
+  write.csv(
+    res2,
+    file = file.path(tabdir, paste0(tablecount[tcnt],"DiffExpressed_",aPVALcutoff,"_",log2FCcutval, contrast_list[y], ".csv" )),
+    quote = TRUE,
+    row.names = F
+  )
+  
+  write.table(
+    res2$Symbol,
+    file = file.path(
+      tabdir,
+      paste0(tablecount[tcnt],"genenames4_GO_deg_", contrast_list[y], ".txt")
+    ),
+    col.names = F,
+    row.names = F,
+    quote = FALSE,
+    sep = "\t"
+  )
+  
+  # UP REG
+  
+  write.table(
+    res2[which(res2[2] > log2FCcutval &
+                       res2[4] < aPVALcutoff),],
+    file = file.path(
+      tabdir,
+      paste0(tablecount[tcnt],"upGene_", contrast_list[y], ".txt")
+    ),
+    col.names = F,
+    row.names = F,
+    quote = FALSE,
+    sep = "\t"
+  )
+  
+  
+  write.table(
+    res2$Symbol[which(res2[2] > log2FCcutval &
+                                res2[4] < aPVALcutoff)],
+    file = file.path(
+      tabdir,
+      paste0(tablecount[tcnt],"genename4_GO_upGene_", contrast_list[y], ".txt")
+    ),
+    col.names = F,
+    row.names = F,
+    quote = FALSE,
+    sep = "\t"
+  )
+  
+  #DOWN REG
+  
+  write.table(
+    res2[which(res2[2] < (-log2FCcutval) &
+                       res2[4] < aPVALcutoff),],
+    file = file.path(
+      tabdir,
+      paste0(tablecount[tcnt],"downGene_", contrast_list[y], ".txt")
+    ),
+    col.names = F,
+    row.names = F,
+    quote = FALSE,
+    sep = "\t"
+  )
+  write.table(
+    res2$Symbol[which(res2[2] < (-log2FCcutval) &
+                                res2[4] < aPVALcutoff)],
+    file = file.path(
+      tabdir,
+      paste0(tablecount[tcnt],"genename4_GO_downGene_", contrast_list[y], ".txt")
+    ),
+    col.names = F,
+    row.names = F,
+    quote = FALSE,
+    sep = "\t"
+  )
+  
+}
+
+
+#####logCPMheatmap####
+library(ggplot2)
+library(ggplotify)
+library(pheatmap)
+library(patchwork)
+
+lcpm <- cpm(dge, log = T)
+fcnt <- fcnt + 1
+newfcnt2 <- fcnt
+
+for (i in c(2:3)) {
+  contrast_list[[i]]
+  #get_no_of_genes_to_list
+  total_deg_genes <-
+    (as.numeric(df.combo$Down[i]) + as.numeric(df.combo$Up[i]))
+  if (total_deg_genes > 50) {
+    total_deg_genes = 50
+    
+  }
+  
+  fcntrl_vs_Treatment <-
+    topTreat(efit,
+             coef = i,
+             n = Inf,
+             sort.by = "P")
+  
+  fcntrl_vs_Treatment.topgenes <-
+    rownames(fcntrl_vs_Treatment)[1:total_deg_genes]
+  
+  var2 <- which(row.names(v$genes) %in% fcntrl_vs_Treatment.topgenes)
+  
+  var1 <- as.data.frame(fcntrl_vs_Treatment.topgenes)
+  colnames(var1) <- c("Symbol")
+  
+  deg <- as.data.frame(lcpm[var2, ])
+  deg$geneid <- rownames(deg)
+  
+  
+  
+  temp <- right_join(genename, deg)
+  temp[is.na(temp)]<- ""
+  row.names(temp) <- temp$Symbol
+  
+  deg2<- temp[-c(1:2)]
+  
+  
+  # my_genelabel_row <- temp$genename
+  
+  
+  
+  my_sample_col <- as.data.frame(anno$Group)
+  colnames(my_sample_col) <- c("sample")
+  row.names(my_sample_col) <- colnames(deg2)
+  ann_colors <- list(sample = data.frame(rep(
+    c(
+      "#d73027",
+      "#fc8d59",
+      "#fee090"
+    ),
+    each = 5,
+    times = 1
+  )))
+  png(
+    file.path(
+      figdir,
+      paste0(
+        figcount[newfcnt2],
+        "heatmap_top25_logCPM_clustered_",
+        colnames(efit$contrasts)[i],
+        ".png"
+      )
+    ),
+    width = 10,
+    height = 10,
+    units = 'in',
+    res = 300
+  )
+  
+  pheatmap(
+    deg2,
+    #    labels_row = my_genelabel_row,
+    annotation_col =  my_sample_col,
+    cluster_cols = TRUE,
+    cluster_rows  = TRUE,
+    show_colnames = TRUE,cellheight=10,
+    main = contrast_list[[i]]
+  )
+  dev.off()
+  png(
+    file.path(
+      figdir,
+      paste0(
+        figcount[newfcnt2],
+        "heatmap_top25_logCPM_unclusterd_",
+        colnames(efit$contrasts)[i],
+        ".png"
+      )
+    ),
+    width = 10,
+    height = 10,
+    units = 'in',
+    res = 300
+  )
+  
+  pheatmap(
+    deg2,
+    #    labels_row = my_genelabel_row,
+    annotation_col =  my_sample_col,
+    cluster_cols = FALSE,
+    cluster_rows  = FALSE,
+    show_colnames = TRUE,cellheight=10,
+    main = contrast_list[[i]]
+  )
+  dev.off()
+}
+
+
+
+
+
+################VENN DIAGRAM########
+# load libraries
+library(plyr)
+library(reshape2)
+library(venn)
+library(ggpubr)
+venn_panel <- list()
+# ALL DEG
+filelist1 = list.files(pattern = "genenames4_GO_deg_",path = c("/Users/skailasam/Desktop/mnt/projects/WGBS_DGauguier_anal/Analysis_report/output_FC_1.5_FDR_0.10/Tables/") ,full.names = TRUE)
+
+datalist1 = lapply(filelist1, function(x)readLines(x) )
+
+
+p1 <- venn(list(W_vs_N=unlist(datalist1[[1]]),S_vs_W=unlist(datalist1[[2]])),  ggplot = TRUE , plotsize = 20, box= FALSE)
+
+
+# ALL UP
+filelist2 = list.files(pattern = "genename4_GO_upGene_",path = c("/Users/skailasam/Desktop/mnt/projects/WGBS_DGauguier_anal/Analysis_report/output_FC_1.5_FDR_0.10/Tables/") ,full.names = TRUE)
+
+datalist2 = lapply(filelist2, function(x)readLines(x) )
+
+p2 <- venn(list(W_vs_N=unlist(datalist2[[1]]),S_vs_W=unlist(datalist2[[2]])), ggplot = TRUE , plotsize = 20, box= FALSE)
+
+
+
+# ALL DOWN
+filelist3 = list.files(pattern = "genename4_GO_downGene_",path = c("/Users/skailasam/Desktop/mnt/projects/WGBS_DGauguier_anal/Analysis_report/output_FC_1.5_FDR_0.10/Tables") ,full.names = TRUE)
+
+datalist3 = lapply(filelist3, function(x)readLines(x) )
+
+p3 <- venn(list(W_vs_N=unlist(datalist3[[1]]),S_vs_W=unlist(datalist3[[2]])),  ggplot = TRUE , plotsize = 20, box= FALSE)
+
+
+m1 <-ggarrange( p1 , p2, p3  ,labels = c("A", "B", "C"),  ncol = 2, nrow = 2)
+ggsave(m1, file = file.path( figdir,paste0(figcount[fcnt+1],"venndiagram_combined.png")))
+dev.off()
+
+#####volcano plot####
+volcano_panel <- list()
+for ( z in 2:3){
+  # fig1
+  #z =2
+  gene_list = my_contrast_list[[z]]
+  #gene_list[is.na(gene_list)] <- 1
+  gene_list$color_flag <-
+    as.factor(
+      ifelse(
+        gene_list[2]< -log2FCcutval  &
+          gene_list[4]< aPVALcutoff,
+        "Downreg",
+        ifelse(
+          gene_list[2]> log2FCcutval  &
+            gene_list[4]< aPVALcutoff,
+          "Upreg" ,
+          "Non-DE"
+        )
+      )
+    )
+  
+  colnames(gene_list)<- c("gene_name","logFC","P.Value","adj.P.Val","color_flag" )
+  gene_list$gene_names <- gene_list$gene_name
+  #gene_list[!gene_list$Gene_gene_name %in% rownames(deg[1:30,]), "gene_names"] <- ""
+  
+  #convertlofFC to FC
+  
+  
+  volcano_panel[[z]] <-  ggplot(data = gene_list,
+                                aes(
+                                  x = logFC,
+                                  y = -log10(adj.P.Val),
+                                  colour = color_flag
+                                )) +
+    #, label = gene_names
+    geom_point(size = 0.75) +
+    # geom_text(size=2, color="black", hjust=0, vjust=3, aes(logFC,-log10(P.Value),label=gene_names)) +
+    coord_cartesian(xlim = c(-7, 7), ylim = c(0, 3)) +
+    labs(title=paste(contrast_list[z]), x ="Fold-change (log2)", y ="P-value (-log10)") +
+    xlab("Fold-change (log2)") +
+    ylab("P-value (-log10)") +
+    scale_colour_manual(values = c("dodgerblue4", "gray", "firebrick4")) +
+    theme_bw() +
+    theme(
+      panel.grid.major = element_blank(),
+      panel.grid.minor = element_blank(),
+      panel.border = element_rect(colour = "black", fill = NA),
+      panel.background = element_blank(),
+      axis.line = element_line(colour = "black")
+    ) +
+    theme(aspect.ratio = 1) + theme(legend.title = element_blank())
+  #  geom_text_repel(size = 2.5, color = "black")
+  
+}
+library("ggplot2") #Best plots
+library("ggrepel") #Avoid overlapping labels
+
+
+##-----------------------------------------------------
+m2 <- ggarrange(volcano_panel[[2]],volcano_panel[[3]], ncol = 2) ## display plot
+ggsave(m2, file = file.path( figdir,paste0(figcount[fcnt+1],"volcanoplot_combined.png")))
+mutateddf <- mutate(yourdataframe, sig=ifelse(output$padj<0.1, "padj<0.1", "Not Sig")) #Will have different colors depending on significance
+input <- cbind(gene=rownames(mutateddf ), mutateddf ) #convert the rownames to a column
+volc = ggplot(input, aes(log2FoldChange, -log10(pvalue))) + #volcanoplot with log2Foldchange versus pvalue
+  geom_point(aes(col=sig)) + #add points colored by significance
+  scale_color_manual(values=c("black", "red")) + 
+  ggtitle("Your title here") #e.g. 'Volcanoplot DESeq2'
+volc+geom_text_repel(data=head(input, 20), aes(label=gene)) #adding text for the top 20 genes
+#ggsave("Volcanoplot.jpeg", device="jpeg") #In case you want to easily save to disk
+volc
+
+####GO enrichment########
+"}
+
+##-- using https://biit.cs.ut.ee/gprofiler/ upload GENE_SYMBOLS and download the output as a CSV file

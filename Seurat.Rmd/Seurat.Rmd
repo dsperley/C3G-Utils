@@ -1,0 +1,6 @@
+---
+title: "Seurat.Rmd"
+output: html_document
+---
+InstallData("ifnb")
+AvailableData()

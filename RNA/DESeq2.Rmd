@@ -1,0 +1,365 @@
+---
+title: "Vahab RNA-Seq"
+output: html_document
+---
+
+```{r,echo=F}
+knitr::opts_chunk$set(message=FALSE,root.dir ='/Volumes/GoogleDrive/My Drive/Projects/Vahab_RNA-seq/DESeq2/',dev=c("png","pdf"),fig.path = "figures/")
+```
+
+```{r load packages}
+
+library("DESeq2")
+library("gplots")
+library("RColorBrewer") 
+library("ggplot2")
+library("tidyverse")
+library("pheatmap") 
+library("biomaRt")
+library("ashr")
+library("goseq")
+#library("NMF") 
+#library("PCAtools")
+theme_set(theme_bw())
+#setwd("/Volumes/GoogleDrive/My Drive/Projects/Vahab_RNA-seq/DESeq2")
+
+out <- "."
+if(!dir.exists(out)) {dir.create(out)}
+```
+
+```{r functions}
+## This Function will allow us to make a MA plot from a list of results objects
+
+maPlot.lists <- function(x,i) {
+  pdf(paste(i, '_maPlot.pdf', sep=''))
+  plotMA(x, main=paste(basename(i), 'alpha=0.05', sep=' '), 
+         alpha=0.01, ylim=c(-6,6))
+  abline(h=c(2,-2), col='red')
+  dev.off()
+}
+
+##This function will add either count means for fpkm means to a DE table
+addMeans<-function(x,means,comp) {
+  detable<-as.data.frame(x)
+  
+  ##get the two group names
+  groups<-unlist(strsplit(comp,"vs"))
+  group_means<-means[,groups]
+  
+  ##match the gene names in the mean df with the results df
+  group_means<-group_means[match(rownames(detable),rownames(group_means)),]
+  detable<-cbind(detable,group_means)
+  return(detable)}
+
+
+## modified DESeq2 plotPCA function, to plot addtional pc dimensions
+plotPCA2 <- function (object, intgroup = "condition", ntop = 500, dim1= 1,dim2 = 2,returnData = FALSE) 
+{
+  rv <- rowVars(assay(object))
+  select <- order(rv, decreasing = TRUE)[seq_len(min(ntop, length(rv)))]
+  pca <- prcomp(t(assay(object)[select, ]))
+  percentVar <- pca$sdev^2/sum(pca$sdev^2)
+  if (!all(intgroup %in% names(colData(object)))) {
+    stop("the argument 'intgroup' should specify columns of colData(dds)")
+  }
+  intgroup.df <- as.data.frame(colData(object)[, intgroup, 
+                                               drop = FALSE])
+  group <- if (length(intgroup) > 1) {
+    factor(apply(intgroup.df, 1, paste, collapse = ":"))
+  }
+  else {
+    colData(object)[[intgroup]]
+  }
+  d <- data.frame( pca$x[, dim1],pca$x[, dim2], group = group, 
+                  intgroup.df, name = colnames(object))
+  dim_names <- paste0("PC",c(dim1,dim2))
+  colnames(d)[1:2] <- dim_names
+  if (returnData) {
+    attr(d, "percentVar") <- percentVar[c(dim1,dim2)]
+    return(d)
+  }
+  ggplot(data = d, aes_string(x = dim_names[1], y = dim_names[2], color = "group")) + 
+    geom_point(size = 3) + xlab(paste0(dim_names[1],": ", round(percentVar[dim1] * 
+                                                        100), "% variance")) + ylab(paste0(dim_names[2],": ", round(percentVar[dim2] * 
+                                                                                                            100), "% variance")) + coord_fixed()
+}
+
+
+sample_heatmap <- function(object,annotation_cols=NULL,file) {
+  if(!is.null(annotation_cols)) {
+    if(!annotation_cols %in% colnames(colData(object))) {
+    stop("annotation variable is not in colData")
+  }
+  }
+  
+mat <- as.matrix(dist(t(assay(vsd))))
+colors <- colorRampPalette( rev(brewer.pal(9, "Blues")) )(255)
+anno_df <- colData(object)[,annotation_cols,drop=F]
+anno_df <- as.data.frame(anno_df)
+
+if (is.null(annotation_cols)) {
+pheatmap(mat,color = colors)
+} else {
+  pheatmap(mat,color = colors,annotation_col = anno_df,filename = file)
+}
+}
+
+top_genes_heatmap <- function(object,top=50,annotation_cols=NULL,row_font=5,file) {
+  if(!is.null(annotation_cols)) {
+    if(!annotation_cols %in% colnames(colData(object))) {
+     stop("annotation variable is not in colData")
+   }
+   }
+   
+select <- order(rowVars(assay(object)),decreasing=TRUE)[1:top]
+anno_df <- colData(object)[,annotation_cols,drop=F]
+anno_df <- as.data.frame(anno_df)
+
+
+if (is.null(annotation_cols)) {
+pheatmap(assay(vsd)[select,], show_rownames=F,scale = "row",treeheight_row = 0,show_colnames = F,border_color = NA,fontsize_row = row_font,filename = file)
+ } else {
+pheatmap(assay(vsd)[select,], show_rownames=F,scale = "row",treeheight_row = 0,show_colnames = F,border_color = NA,annotation_col = anno_df,fontsize_row =row_font,filename = file)
+ }
+}
+
+## DE is Res_with_anno, gene lengths is a dataframe with 2 columns,- GeneID, and gene length, genome -"mm10", and "ensGene"
+run_goseq <- function(de,gene_lengths,genome,ids) {
+assayed.genes <- de$Ensembl_Gene_ID
+de.genes <- assayed.genes[de$padj<=0.05]
+gene.vector=as.integer(assayed.genes%in%de.genes)
+names(gene.vector)=assayed.genes
+
+bias.data <- gene_lengths$V2
+names(bias.data) <- gene_lengths$V1
+bias.data <- bias.data[match(names(gene.vector),names(bias.data))]
+pwf <- nullp(gene.vector,genome,ids,bias.data = bias.data)
+go <- goseq(pwf,genome,ids)
+return(go)
+}
+
+
+
+```
+
+## Differential Gene expression analysis
+
+- Muscle Stem cells
+- Fibers
+```{r inport and prep}
+
+meta <- read.csv("MetaData.csv")
+rownames(meta) <- meta$Sample
+meta <- separate(meta,Condition, into =c("Genotype","Tumour"),remove = F,sep = "\\.")
+
+counts <- read.delim("rawCountMatrix.csv",check.names = F)
+annotation <- counts[,c(1,2)]
+rownames(counts) <- counts$Gene
+counts <- counts[,-c(1,2)]
+
+counts <- counts[,match(rownames(meta),colnames(counts))]
+
+
+comparisons <- read.csv("Comparions.csv",header=F)
+comparisons[,1] <- trimws(comparisons[,1])
+comparisons[,2] <- trimws(comparisons[,2])
+comparisons$V1 <- gsub(" ","",comparisons$V1)
+comparisons$V2 <- gsub(" ","",comparisons$V2)
+
+contrasts <- map(1:nrow(comparisons), function(x) {
+  treat <- comparisons[x,1]
+  control <- comparisons[x,2]
+  
+  return(c("Condition",treat,control))
+})
+
+names(contrasts) <- paste(trimws(comparisons[,1]),trimws(comparisons[,2]),sep = "_vs_")
+```
+
+```{r create dds}
+dds <- DESeqDataSetFromMatrix(colData = meta,
+                                       countData = counts,
+                                       design= ~ Condition)
+##filtering
+total <- dim(dds)[1]
+keep <- rowSums(counts(dds)) >= 10
+dds <- dds[keep,]
+kept <- dim(dds)[1]
+filtered = total - kept
+
+
+## split objects by cell type
+dds_MSC <- dds[,meta$Cell_type == "MSC"]
+dds_Fiber <- dds[,meta$Cell_type == "Fiber"]
+dds <- DESeq(dds)
+```
+
+Genes with less than 10 reads across all samples were removed from the analysis. This filtering removed `r filtered` genes, leaving `r kept` genes for subsequent analysis
+
+### DE analysis for MSC
+
+```{r de msc}
+dds_MSC <- DESeq(dds_MSC)
+
+vsd <- vst(dds_MSC)
+p <- plotPCA2(vsd,intgroup = "Condition")
+ggsave(p,filename = file.path(out,"PCA_Muscle_Stem_cells.png"))
+
+
+
+sample_heatmap(vsd,"Condition",file.path(out,"Sample_heatmap_Muscle_Stem_cells.png"))
+
+top_genes_heatmap(vsd, annotation_cols = "Condition",file=file.path(out,"top_100_most_variable_genes_heatmap_Muscle_stem_cells.png"))
+
+
+DESeq2::plotDispEsts(dds_MSC)
+
+normd_counts <- counts(dds_MSC,normalized = T)
+normd_counts <- rownames_to_column(as.data.frame(normd_counts),"GeneID")
+write.csv(normd_counts, file = file.path(out,"Muscle_Stem_cells_normalized_counts.csv"),row.names=F)
+
+##this will do all comparisons
+Res <- lapply(contrasts,function(x) {
+  res <- results(dds_MSC,contrast = x,alpha = 0.05)
+  lfcShrink(dds=dds_MSC,res = res,type = "ashr")
+  })
+                  
+
+ensembl <- useEnsembl(biomart = "genes",dataset = "mmusculus_gene_ensembl",version = 102)
+
+
+Res_with_annot <- lapply(Res,function(x) {
+  
+  dat <- as.data.frame(x)
+  dat <- rownames_to_column(dat,"Ensembl_Gene_ID")
+  descriptions <- getBM(attributes = c("ensembl_gene_id","external_gene_name","description"),filters = "ensembl_gene_id",values=dat$Ensembl_Gene_ID,mart = ensembl)
+  dat <- merge(dat,descriptions,by.x="Ensembl_Gene_ID",by.y="ensembl_gene_id")
+  colnames(dat)[8] <- "Gene_Symbol" 
+  return(dat)
+})
+
+
+file_names <- file.path(out,paste0("Muscle_stem_cells_", names(Res_with_annot),"_DEtable.csv"))
+map2(Res_with_annot,file_names,function(x,y) {
+  write.csv(x,file = y,row.names=F)
+})
+
+## combined table
+combined <- map2(Res_with_annot,names(Res_with_annot),
+                 function(d,y) {dplyr::rename_with(d, ~paste(.x,y,sep="_"),-Ensembl_Gene_ID)}) %>% 
+                reduce(function(x,y) {inner_join(x,y,by="Ensembl_Gene_ID")}) %>% 
+                 dplyr::rename_with(~gsub("_KO.*","",.x),last_col(offset=1):last_col()) %>%
+                 dplyr::select(!matches("[Gg]ene.*tumor$"))
+
+write.csv(combined,file = file.path(out,"Muscle_stem_cells_combined_DEtable.csv"),row.names=F)
+
+### goseq
+gene_lengths <- read.delim("../Mus_musculus.GRCm38.Ensembl102.genes.length.tsv",
+                           header=F)
+
+go_res <- map(Res_with_annot,~run_goseq(.x,gene_lengths,"mm10","ensGene"))
+
+file_names <- file_names <- file.path(out,paste0("Muscle_stem_cells_", names(go_res),"_goseq.csv"))
+
+map2(go_res,file_names,function(x,y) {
+  write.csv(x,file = y,row.names=F)
+})
+
+
+save(dds_MSC,file=file.path(out,"MSC_DESeqDataObject.rda"))
+save(vsd,file = file.path(out,"MSC_vsd.rda"))
+
+
+```
+
+
+
+Fibers
+```{r}
+dds_Fiber <- DESeq(dds_Fiber)
+
+vsd <- vst(dds_Fiber)
+p <- plotPCA2(vsd,intgroup = "Condition")
+ggsave(p,filename = file.path(out,"PCA_Fiber_cells.png"))
+
+
+sample_heatmap(vsd,"Condition",file.path(out,"Sample_heatmap_Fiber_cells.png"))
+
+
+
+top_genes_heatmap(vsd, annotation_cols="Condition",file=file.path(out,"top_100_most_variable_genes_heatmap_Fiber_cells.png"))
+
+
+DESeq2::plotDispEsts(dds_Fiber)
+
+
+##this will do all comparisons
+Res <- lapply(contrasts,function(x) {
+  res <- results(dds_Fiber,contrast = x,alpha = 0.05)
+  lfcShrink(dds=dds_Fiber, res=res,type = "ashr")
+  })
+                  
+
+ensembl <- useEnsembl(biomart = "genes",dataset = "mmusculus_gene_ensembl",version = 102)
+
+
+Res_with_annot <- lapply(Res,function(x) {
+  
+  dat <- as.data.frame(x)
+  dat <- rownames_to_column(dat,"Ensembl_Gene_ID")
+  descriptions <- getBM(attributes = c("ensembl_gene_id","external_gene_name","description"),filters = "ensembl_gene_id",values=dat$Ensembl_Gene_ID,mart = ensembl)
+  dat <- merge(dat,descriptions,by.x="Ensembl_Gene_ID",by.y="ensembl_gene_id")
+  colnames(dat)[8] <- "Gene_Symbol" 
+  return(dat)
+})
+
+## normalized counts
+normd_counts <- counts(dds_Fiber,normalized = T)
+normd_counts <- rownames_to_column(as.data.frame(normd_counts),"GeneID")
+write.csv(normd_counts, file = file.path(out,"Fiber_cells_normalized_counts.csv"),row.names=F)
+
+file_names <- file.path(out,paste0("Fiber_cells_", names(Res_with_annot),"_DEtable.csv"))
+map2(Res_with_annot,file_names,function(x,y) {
+  write.csv(x,file = y,row.names=F)
+})
+
+combined <- map2(Res_with_annot,names(Res_with_annot),
+                 function(d,y) {dplyr::rename_with(d, ~paste(.x,y,sep="_"),-Ensembl_Gene_ID)}) %>% 
+                reduce(function(x,y) {inner_join(x,y,by="Ensembl_Gene_ID")}) %>% 
+                 dplyr::rename_with(~gsub("_KO.*","",.x),last_col(offset=1):last_col()) %>%
+                 dplyr::select(!matches("[Gg]ene.*tumor$"))
+
+write.csv(combined,file = file.path(out,"Fiber_cells_combined_DEtable.csv"),row.names=F)
+
+
+### goseq
+gene_lengths <- read.delim("../Mus_musculus.GRCm38.Ensembl102.genes.length.tsv",
+                           header=F)
+
+go_res <- map(Res_with_annot,~run_goseq(.x,gene_lengths,"mm10","ensGene"))
+
+file_names <- file_names <- file.path(out,paste0("Fiber_Cells_", names(go_res),"_goseq.csv"))
+
+map2(go_res,file_names,function(x,y) {
+  write.csv(x,file = y,row.names=F)
+})
+
+
+save(dds_Fiber,file=file.path(out,"Fiber_DESeqDataObject.rda"))
+save(vsd,file = file.path(out,"Fiber_vsd.rda"))
+
+```
+
+
+
+
+
+
+```{r save}
+
+
+
+capture.output(sessionInfo(),file = file.path(out,"SessionInfo.txt"))
+
+sessionInfo()
+```
