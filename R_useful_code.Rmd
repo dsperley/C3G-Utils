@@ -89,3 +89,10 @@ expand.grid(height = seq(60, 80, 5),
               sex = c("Male","Female"))
 ```
 
+installing specific version of R package
+```{r}
+url <- "https://cran.r-project.org/src/contrib/Archive/tidyverse/tidyverse_1.3.1.tar.gz"
+install.packages(url, type="source", repo=NULL)
+
+```
+

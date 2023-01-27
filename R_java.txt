@@ -1,0 +1,42 @@
+R needs jdk (java development kit) instead of jre (java runtime environment)
+
+download from oracle
+user name: danielle.perley@mgcill.ca
+pass: Hobbbes1!
+
+and follow install instructions
+for Java and R to work they must be of the same architecture (x64_86 or arm6) arm6 and x64_86 not the same!
+
+to find java versions on machine:
+dperley@Alyssum Kassouf % /usr/libexec/java_home -V
+Matching Java Virtual Machines (3):
+    17.0.3 (arm64) "Oracle Corporation" - "Java SE 17.0.3" /Library/Java/JavaVirtualMachines/jdk-17.0.3.jdk/Contents/Home
+    1.8.351.10 (x86_64) "Oracle Corporation" - "Java" /Library/Internet Plug-Ins/JavaAppletPlugin.plugin/Contents/Home
+    1.8.0_351 (x86_64) "Oracle Corporation" - "Java SE 8" /Library/Java/JavaVirtualMachines/jdk1.8.0_351.jdk/Contents/Home
+/Library/Java/JavaVirtualMachines/jdk-17.0.3.jdk/Contents/Home
+
+set JAVA_HOME:
+in ~/.zshrc
+export JAVA_HOME=$(/usr/libexec/java_home -v1.8.0_351)
+
+also need: (from https://www.owsiak.org/r-3-4-rjava-macos-and-even-more-mess/) 
+> JAVA_HOME=${JAVA_HOME}/jre
+> sudo R CMD javareconf \
+JAVA_HOME=${JAVA_HOME} \
+JAVA=${JAVA_HOME}/../bin/java \
+JAVAC=${JAVA_HOME}/../bin/javac \
+JAVAH=${JAVA_HOME}/../bin/javah \
+JAR=${JAVA_HOME}/../bin/jar \
+JAVA_LIBS="-L${JAVA_HOME}/lib/server -ljvm" \
+JAVA_CPPFLAGS="-I${JAVA_HOME}/../include -I${JAVA_HOME}/../include/darwin"
+
+## check /Library/Frameworks/R.framework/Versions/3.4/Resources/etc/Makeconf contains following entries:
+
+JAVA_LIBS="-L${JAVA_HOME}/lib/server -ljvm" \
+JAVA_CPPFLAGS="-I${JAVA_HOME}/../include -I${JAVA_HOME}/../include/darwin"
+
+This works for terminal. In Rstudio, use:
+loadRstudio
+
+which is an alias for:
+loadRstudio="LD_LIBRARY_PATH=/Library/Java/JavaVirtualMachines/jdk1.8.0_351.jdk/Contents/Home/jre/lib/server: open -a RStudio"
