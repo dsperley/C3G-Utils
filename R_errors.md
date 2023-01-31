@@ -9,4 +9,8 @@ Error: package or namespace load failed for ‘Cairo’:
   Referenced from: /Library/Frameworks/R.framework/Versions/4.1/Resources/library/Cairo/libs/Cairo.so
   Reason: image not found
   ```
-  
+Fix: Insall XQuartz
+https://stackoverflow.com/questions/38952427/include-cairo-r-on-a-mac
+
+
+
