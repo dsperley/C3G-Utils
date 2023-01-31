@@ -1,8 +1,3 @@
----
-editor_options: 
-  markdown: 
-    wrap: 72
----
 
 [HPC](#HPC)\
 [Bash](#Bash)\
@@ -165,6 +160,9 @@ sure you specify the --no-g --no-p options, like so:
 ## cancel all jobs
 
     sq | awk '{print $1}' | tail -n +2 | xargs scancel 
+## cancel specific jobs. 
+
+`for i in `cat TumorPair_job_list_2023-01-30T13.14.07.tsv |grep MU-17|awk '$8 != 0 { print $0 }'|cut -f1`;do scancel ${i};done`
 
 ## mounts
 
